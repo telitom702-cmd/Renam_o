@@ -1,6 +1,8 @@
 import os
 import logging
 import threading
+import time
+import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import ForceReply, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from info import API_ID, API_HASH, BOT_TOKEN, ADMIN_ID
@@ -27,6 +29,8 @@ def run_web():
 
 # স্টেপ ট্র্যাক করার জন্য ডিকশনারি
 user_steps = {}
+# ক্যানসেল সিস্টেম ট্র্যাক করার জন্য ডিকশনারি
+cancel_events = {}
 
 if not os.path.exists("downloads"):
     os.makedirs("downloads")
@@ -45,7 +49,40 @@ async def clean_server(file_paths):
                 logging.error(f"Failed to delete {file}: {e}")
 
 # ---------------------------------------------------------
-# ইউজার ইন্টারফেস (বাটন ও প্রোগ্রেস বার)
+# উন্নত প্রগ্রেস বার (Cancel সিস্টেম সহ)
+# ---------------------------------------------------------
+last_edit_time = {}
+
+async def progress_bar(current, total, message):
+    # যদি ইউজার ক্যানসেল করে থাকে, তবে এরর থ্রো করবে
+    msg_id = message.id
+    if msg_id in cancel_events and cancel_events[msg_id].is_set():
+        raise Exception("❌ প্রসেস সফলভাবে ক্যানসেল করা হয়েছে!")
+        
+    percent = (current / total) * 100
+    downloaded_mb = current / (1024 * 1024)
+    total_mb = total / (1024 * 1024)
+    
+    current_time = time.time()
+    
+    if msg_id not in last_edit_time:
+        last_edit_time[msg_id] = current_time
+        
+    # প্রতি ৪ সেকেন্ড পরপর মেসেজ আপডেট হবে (FloodWait এড়ানোর জন্য)
+    if current_time - last_edit_time[msg_id] >= 4 or current == total:
+        text = (
+            f"⏳ **প্রগ্রেস:** `{percent:.1f}%`\n\n"
+            f"📥 **ডাউনলোডেড:** `{downloaded_mb:.2f} MB`\n"
+            f"📁 **মোট সাইজ:** `{total_mb:.2f} MB`"
+        )
+        try:
+            await message.edit_text(text)
+            last_edit_time[msg_id] = current_time
+        except Exception:
+            pass
+
+# ---------------------------------------------------------
+# বাটন ডিজাইন
 # ---------------------------------------------------------
 def start_buttons():
     return InlineKeyboardMarkup(
@@ -71,13 +108,10 @@ def skip_button(step):
         [[InlineKeyboardButton("⏭️ Skip (এড়িয়ে যান)", callback_data=f"skip_{step}")]]
     )
 
-async def progress_bar(current, total, message):
-    percent = (current / total) * 100
-    text = f"⏳ প্রগ্রেস: {percent:.1f}%\n\n💾 {current/(1024*1024):.2f}MB / {total/(1024*1024):.2f}MB"
-    try:
-        await message.edit_text(text)
-    except Exception:
-        pass
+def cancel_button():
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("🛑 ক্যানসেল (Cancel)", callback_data="cancel_process")]]
+    )
 
 # ---------------------------------------------------------
 # ১. /start কমান্ড
@@ -141,6 +175,15 @@ async def callback_handler(client, query: CallbackQuery):
             original_msg = await client.get_messages(query.message.chat.id, data["msg_id"])
             await process_file(client, query.message, data, original_msg)
             del user_steps[user_id]
+
+    elif data == "cancel_process":
+        # ক্যানসেল বাটন ক্লিক করলে ইভেন্ট সেট করা হবে
+        msg_id = query.message.id
+        if msg_id in cancel_events:
+            cancel_events[msg_id].set()
+            await query.answer("🛑 প্রসেস বাতিল করা হচ্ছে...", show_alert=True)
+        else:
+            await query.answer("⚠️ কোনো চলমান প্রসেস নেই।", show_alert=True)
 
     elif data == "help":
         help_text = (
@@ -216,7 +259,7 @@ async def text_handler(client, message):
             del user_steps[user_id]
 
 # ---------------------------------------------------------
-# ৭. মূল ফিউচার: কনভার্ট, রিনেম, থাম্বনেইল লাগানো ও সার্ভার ক্লিন
+# ৭. মূল ফিউচার: কনভার্ট, রিনেম, থাম্বনেইল লাগানো ও ক্যানসেল সিস্টেম
 # ---------------------------------------------------------
 async def process_file(client, message, data, original_msg):
     media_type = data.get("media_type")
@@ -228,7 +271,10 @@ async def process_file(client, message, data, original_msg):
     thumb_path = get_thumbnail(message.from_user.id)
     output_mode = get_mode(message.from_user.id)
     
-    process_msg = await message.reply_text("⏳ ফাইল ডাউনলোড শুরু হয়েছে...")
+    # ক্যানসেল ইভেন্ট তৈরি করা
+    process_msg = await message.reply_text("⏳ ফাইল ডাউনলোড শুরু হয়েছে...", reply_markup=cancel_button())
+    cancel_event = asyncio.Event()
+    cancel_events[process_msg.id] = cancel_event
     
     # সার্ভার ক্লিন সিস্টেমের জন্য সব ফাইলের ট্র্যাক রাখা হচ্ছে
     temp_files = []
@@ -237,7 +283,7 @@ async def process_file(client, message, data, original_msg):
         file_path = await original_msg.download(file_name="downloads/", progress=progress_bar, progress_args=(process_msg,))
         temp_files.append(file_path)
         
-        await process_msg.edit_text("⚙️ প্রসেস হচ্ছে...")
+        await process_msg.edit_text("⚙️ প্রসেস হচ্ছে...", reply_markup=cancel_button())
         
         _, original_ext = os.path.splitext(original_file_name)
         if not original_ext:
@@ -257,7 +303,7 @@ async def process_file(client, message, data, original_msg):
             final_file = file_path
             
         if media_type == "document":
-            await process_msg.edit_text("🎞️ ভিডিওতে কনভার্ট হচ্ছে...")
+            await process_msg.edit_text("🎞️ ভিডিওতে কনভার্ট হচ্ছে...", reply_markup=cancel_button())
             video_file = f"downloads/Converted_{message.id}.mp4"
             stream = ffmpeg.input(final_file)
             stream = ffmpeg.output(stream, video_file, **{"c:v": "copy", "c:a": "copy"})
@@ -268,7 +314,7 @@ async def process_file(client, message, data, original_msg):
         else:
             send_file = final_file
             
-        await process_msg.edit_text("🚀 আপলোড হচ্ছে...")
+        await process_msg.edit_text("🚀 আপলোড হচ্ছে...", reply_markup=cancel_button())
         
         if output_mode == "document":
             await message.reply_document(
@@ -277,17 +323,27 @@ async def process_file(client, message, data, original_msg):
             )
         else:
             await message.reply_video(
-                video=send_file, caption=caption, thumb=thumb_path if thumb_path else None,
-                progress=progress_bar, progress_args=(process_msg,)
+                video=send_file, 
+                caption=caption, 
+                thumb=thumb_path if thumb_path else None,
+                supports_streaming=True,
+                progress=progress_bar, 
+                progress_args=(process_msg,)
             )
         
         await process_msg.delete()
         
     except Exception as e:
-        await process_msg.edit_text(f"❌ এরর: {e}")
+        error_text = str(e)
+        if "ক্যানসেল" in error_text:
+            await process_msg.edit_text("🛑 প্রসেস সফলভাবে বাতিল করা হয়েছে।")
+        else:
+            await process_msg.edit_text(f"❌ এরর: {error_text}")
         
     finally:
-        # 🧹 সার্ভার ক্লিন সিস্টেম: কাজ শেষ হলে বা এরর আসলেও সব ফাইল ডিলিট করবে
+        # 🧹 সার্ভার ক্লিন সিস্টেম: কাজ শেষ হলে বা ক্যানসেল হলেও সব ফাইল ডিলিট করবে
+        if process_msg.id in cancel_events:
+            del cancel_events[process_msg.id]
         await clean_server(temp_files)
 
 # ---------------------------------------------------------
