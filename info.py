@@ -1,7 +1,7 @@
 import os
 
-API_ID = 12345678  # আপনার API_ID
-API_HASH = "your_api_hash_here"
-BOT_TOKEN = "your_bot_token_here"
-MONGO_URI = "mongodb+srv://user:password@cluster.mongodb.net/?retryWrites=true&w=majority"
-ADMIN_ID = 123456789
+API_ID = 24776633  # আপনার API_ID
+API_HASH = "57b1f632044b4e718f5dce004a988d69"
+BOT_TOKEN = "8823668328:AAEHQyUmGYBuu-d8BoHOvqE4OYp4sPxqjOs"
+MONGO_URI = "mongodb+srv://rendamd1_db_user:M7vb8ZD9rx0AfHnP@cluster0.uzqvib6.mongodb.net/?appName=Cluster0"
+ADMIN_ID = 8248792819
